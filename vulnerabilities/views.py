@@ -1,44 +1,60 @@
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db.models import Count
+from rest_framework.decorators import api_view
 from .models import Vulnerability
 from .serializers import VulnerabilitySerializer
 import requests
 
-class VulnerabilityViewSet(viewsets.ModelViewSet):
-    queryset = Vulnerability.objects.all()
-    serializer_class = VulnerabilitySerializer
+# 1. Obtener todas las vulnerabilidades
+@api_view(['GET'])
+def get_vulnerabilities(request):
+    vulnerabilities = Vulnerability.objects.all()
+    serializer = VulnerabilitySerializer(vulnerabilities, many=True)
+    return Response(serializer.data)
 
-    def list(self, request):
-        """GET: Listar todas las vulnerabilidades"""
-        vulnerabilities = self.get_queryset()
-        serializer = self.get_serializer(vulnerabilities, many=True)
-        return Response(serializer.data)
+# 2. Marcar vulnerabilidad como fixeada
+@api_view(['POST'])
+def fix_vulnerability(request):
+    cve_ids = request.data.get('cve_ids', [])  # Lista de CVE a fixear
+    Vulnerability.objects.filter(cve_id__in=cve_ids).update(fixed=True)
+    return Response({"message": "Vulnerabilidades marcadas como fixeadas"}, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=['get'])
-    def active(self, request):
-        """GET: Listar vulnerabilidades no fixeadas"""
-        vulnerabilities = self.get_queryset().filter(is_fixed=False)
-        serializer = self.get_serializer(vulnerabilities, many=True)
-        return Response(serializer.data)
+# 3. Obtener vulnerabilidades no fixeadas
+@api_view(['GET'])
+def get_unfixed_vulnerabilities(request):
+    vulnerabilities = Vulnerability.objects.filter(fixed=False)
+    serializer = VulnerabilitySerializer(vulnerabilities, many=True)
+    return Response(serializer.data)
 
-    @action(detail=False, methods=['post'])
-    def mark_fixed(self, request):
-        """POST: Marcar vulnerabilidades como fixeadas"""
-        cve_ids = request.data.get('cve_ids', [])
-        if not cve_ids:
-            return Response(
-                {'error': 'No CVE IDs provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+# 4. Obtener resumen por severidad
+from django.db import models
+
+@api_view(['GET'])
+def get_summary_by_severity(request):
+    summary = Vulnerability.objects.filter(fixed=False).values('severity').annotate(count=models.Count('severity'))
+    return Response(summary)
+
+    return Response(summary)
+
+# 5. Cargar vulnerabilidades desde la API del NIST
+@api_view(['POST'])
+def fetch_nist_vulnerabilities(request):
+    url = "https://services.nvd.nist.gov/rest/json/cves/1.0"
+    response = requests.get(url)
+    
+    if response.status_code == 200:
+        data = response.json().get("result", {}).get("CVE_Items", [])
         
-        updated = Vulnerability.objects.filter(cve_id__in=cve_ids).update(is_fixed=True)
-        return Response({'updated': updated})
+        for item in data:
+            cve_id = item["cve"]["CVE_data_meta"]["ID"]
+            description = item["cve"]["description"]["description_data"][0]["value"]
+            severity = item.get("impact", {}).get("baseMetricV3", {}).get("cvssV3", {}).get("baseSeverity", "Unknown")
 
-    @action(detail=False, methods=['get'])
-    def summary(self, request):
-        """GET: Obtener resumen por severidad"""
-        summary = Vulnerability.objects.values('severity')\
-            .annotate(total=Count('id'), fixed=Count('id', filter=models.Q(is_fixed=True)))
-        return Response(summary)
+            Vulnerability.objects.update_or_create(
+                cve_id=cve_id,
+                defaults={"description": description, "severity": severity}
+            )
+
+        return Response({"message": "Vulnerabilidades cargadas desde NIST"}, status=status.HTTP_201_CREATED)
+    
+    return Response({"error": "No se pudo obtener datos del NIST"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

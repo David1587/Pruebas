@@ -1,26 +1,38 @@
-version: '3.8'
 services:
+  db:
+    image: postgres:latest
+    container_name: mi_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    networks:
+      - mi_red
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
   web:
     build: .
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy  # Esperar hasta que DB esté lista 
     ports:
       - "8000:8000"
-    depends_on:
-      - db
-    environment:
-      - DEBUG=False
-      - ALLOWED_HOSTS=*
-  
-  db:
-    image: postgres:13
-    environment:
-      - POSTGRES_DB=vulndb
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    volumes:
-      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - .env
+    networks:
+      - mi_red
+
+networks:
+  mi_red:
+    driver: bridge
 
 volumes:
-  postgres_data:
+  pgdata:
